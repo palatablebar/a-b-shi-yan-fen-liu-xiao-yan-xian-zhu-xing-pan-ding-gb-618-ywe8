@@ -1,0 +1,59 @@
+/* 设计令牌 · 实验室记录本：石墨灰 + 芥末黄 + 网格纸底纹 + 手写批注。
+   规则：oklch() 色板；禁用纯黑纯白；双字体（ZCOOL XiaoWei 标题 / Noto Sans SC 正文）；
+   手写批注用 Caveat（仅拉丁文与数字标注），数字等宽用系统 mono。 */
+:root {
+  color-scheme: light;
+
+  /* 网格纸 */
+  --paper: oklch(0.968 0.008 95);
+  --paper-2: oklch(0.945 0.011 95);
+  --paper-3: oklch(0.912 0.014 92);
+  --grid: oklch(0.795 0.018 245 / 0.42);
+  --grid-major: oklch(0.79 0.02 245 / 0.65);
+
+  /* 石墨灰墨色 */
+  --ink: oklch(0.285 0.012 250);
+  --ink-soft: oklch(0.44 0.011 250);
+  --ink-faint: oklch(0.575 0.009 250);
+  --rule: oklch(0.845 0.009 95);
+  --rule-strong: oklch(0.7 0.012 250);
+
+  /* 芥末黄主色 */
+  --accent: oklch(0.745 0.135 85);
+  --accent-ink: oklch(0.512 0.105 78);
+  --accent-soft: oklch(0.83 0.09 86);
+  --accent-wash: oklch(0.936 0.05 88);
+
+  /* 状态色 */
+  --ok: oklch(0.5 0.078 156);
+  --ok-wash: oklch(0.934 0.032 156);
+  --warn: oklch(0.665 0.132 70);
+  --warn-wash: oklch(0.943 0.048 78);
+  --danger: oklch(0.53 0.152 26);
+  --danger-wash: oklch(0.932 0.042 28);
+  --info: oklch(0.5 0.05 243);
+  --info-wash: oklch(0.936 0.022 243);
+
+  /* 实验室批注色 */
+  --margin: oklch(0.66 0.13 30 / 0.5);
+  --stamp: oklch(0.5 0.12 32);
+
+  --font-display: 'ZCOOL XiaoWei', 'Songti SC', 'Noto Serif SC', serif;
+  --font-body: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', system-ui, sans-serif;
+  --font-hand: 'Caveat', 'ZCOOL XiaoWei', cursive;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, 'Cascadia Mono', monospace;
+
+  --fs-xs: 0.72rem;
+  --fs-sm: 0.82rem;
+  --fs-md: 0.94rem;
+  --fs-lg: 1.16rem;
+  --fs-xl: clamp(1.45rem, 2.1vw, 2.05rem);
+  --fs-2xl: clamp(2rem, 3.4vw, 3.1rem);
+
+  --pad: clamp(14px, 1.5vw, 26px);
+  --rail: 232px;
+  --radius: 2px;
+  --shadow: 0 1px 0 oklch(0.86 0.01 95), 0 16px 32px -30px oklch(0.3 0.02 250 / 0.5);
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --grid-size: 24px;
+}
