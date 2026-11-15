@@ -80,9 +80,11 @@ class SrmCheckIn(BaseModel):
     alpha: float | None = Field(default=None, gt=0, lt=0.5)
     power: float | None = Field(default=None, gt=0, lt=1)
     alarm_p: float | None = Field(default=None, gt=0, lt=0.5)
+    segment_id: int | None = Field(default=None)
 
 
 class MetricCheckIn(BaseModel):
     method: Literal["bh", "bonferroni"] = "bh"
     alpha: float | None = Field(default=None, gt=0, lt=0.5)
     variant_code: str | None = Field(default=None, max_length=40)
+    segment_id: int | None = Field(default=None)

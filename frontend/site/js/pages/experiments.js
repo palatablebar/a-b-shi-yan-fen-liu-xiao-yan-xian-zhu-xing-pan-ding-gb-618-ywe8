@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { ENUMS, can, srmTone, statusTone, verdictTone } from '../config.js';
+import { completenessDots, segmentTimeline } from '../segment-ui.js';
 import {
   badge,
   drawer,
@@ -74,6 +75,18 @@ function detailBody(item) {
       { key: 'is_control', label: '角色', render: (row) => (row.is_control ? badge('info', '对照') : badge('medium', '实验')) },
     ],
   })}
+  <h3 style="margin:14px 0 6px;font-size:0.95rem">投放内容与投放段</h3>
+  ${
+    item.active_segment
+      ? `<div class="verdict-card ${item.active_segment.stale ? 'stop' : ''}">
+          <span class="verdict mono">${esc(item.active_segment.segment_code)}</span>
+          <span class="muted">${esc(item.active_segment.content_ref || '—')} · ${esc(item.active_segment.status_label || item.active_segment.status)}</span>
+          ${item.active_segment.stale ? badge('srm', '上游内容已更新·结论失效') : badge('ok', '当前生效')}
+          ${completenessDots(item.active_segment.completeness)}
+        </div>`
+      : '<p class="muted">还没有生效投放段。</p>'
+  }
+  ${item.segments && item.segments.length ? segmentTimeline(item.segments) : ''}
   <h3 style="margin:14px 0 6px;font-size:0.95rem">SRM 与功效快照</h3>
   ${
     srm.checked_at
@@ -103,13 +116,15 @@ function detailBody(item) {
         })
       : '<p class="muted">还没有检验结果。</p>'
   }
-  <h3 style="margin:14px 0 6px;font-size:0.95rem">决策</h3>
+  <h3 style="margin:14px 0 6px;font-size:0.95rem">决策（绑定投放段）</h3>
   ${
     item.decision
-      ? `<div class="verdict-card ${esc(item.decision.verdict)}">
+      ? `<div class="verdict-card ${esc(item.decision.verdict)} ${item.decision.is_valid ? '' : 'stop'}">
           <span class="verdict">${esc(item.decision.verdict_label)}</span>
           <span class="muted">${esc(item.decision.decided_by)} · ${fmtTime(item.decision.decided_at)}</span>
+          ${item.decision.is_valid ? badge('ok', '有效') : badge('srm', '已失效（上游内容变化）')}
           <p style="margin:0">${esc(item.decision.rationale)}</p>
+          ${item.decision.is_valid ? '' : `<p class="tiny muted" style="margin:0">${esc(item.decision.invalid_reason || '')}</p>`}
         </div>`
       : '<p class="muted">还没有出决策。</p>'
   }`;
@@ -323,6 +338,16 @@ export const experimentsPage = {
                 `${badge(srmTone(row.srm.status), row.srm.status_label)}${
                   row.srm.p_value !== null && row.srm.p_value !== undefined ? `<div class="mono muted">p=${fmtP(row.srm.p_value)}</div>` : ''
                 }`,
+            },
+            {
+              key: 'active_segment',
+              label: '生效投放内容',
+              render: (row) =>
+                row.active_segment
+                  ? `<b class="mono">${esc(row.active_segment.segment_code)}</b>${
+                      row.active_segment.stale ? ' ' + badge('srm', '结论失效') : ''
+                    }<div class="tiny muted">${esc(row.active_segment.content_ref || '')}</div>`
+                  : '<span class="muted">—</span>',
             },
             { key: 'started_on', label: '开始', className: 'mono nowrap' },
           ],

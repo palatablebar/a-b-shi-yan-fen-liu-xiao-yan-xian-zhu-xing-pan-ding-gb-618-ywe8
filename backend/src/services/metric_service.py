@@ -1,4 +1,8 @@
-"""算法 B 的落库层：从 assignments 生成对照/实验组汇总 → 双比例检验 + 多重校正 → 写结果。"""
+"""算法 B 的落库层：从指定投放段的 assignments 汇总 → 双比例检验 + 多重校正 → 段结果。
+
+指标检验结果带 segment_id，唯一键为 (segment_id, variant_code, metric_key)；
+换投放内容 = 新段，旧段结果原样保留，页面/导出按段呈现并标注对应投放内容。
+"""
 from __future__ import annotations
 
 from sqlalchemy import func, or_, select
@@ -8,8 +12,9 @@ from src.constants.enums import CORRECTION_LABELS, METRIC_LABELS, VERDICT_LABELS
 from src.models.assignment import Assignment
 from src.models.experiment import Experiment
 from src.models.metric_result import MetricResult
+from src.models.traffic_segment import TrafficSegment
 from src.models.variant import Variant
-from src.services import variant_service
+from src.services import segment_service, variant_service
 from src.services.algorithms import metric_test as metric_algorithm
 from src.utils.errors import AppError
 from src.utils.timeutil import iso_utc, utcnow
@@ -19,6 +24,7 @@ def serialize(row: MetricResult) -> dict:
     return {
         "id": row.id,
         "experiment_id": row.experiment_id,
+        "segment_id": row.segment_id,
         "variant_code": row.variant_code,
         "variant_name": row.variant_name,
         "metric_key": row.metric_key,
@@ -54,11 +60,11 @@ def serialize(row: MetricResult) -> dict:
     }
 
 
-def _totals(db: Session, experiment_id: int, variant_id: int, metric_key: str) -> tuple[int, int]:
+def _totals(db: Session, segment_id: int, variant_id: int, metric_key: str) -> tuple[int, int]:
     row = db.execute(
         select(func.coalesce(func.sum(Assignment.samples), 0), func.coalesce(func.sum(Assignment.conversions), 0))
         .where(
-            Assignment.experiment_id == experiment_id,
+            Assignment.segment_id == segment_id,
             Assignment.variant_id == variant_id,
             Assignment.metric_key == metric_key,
         )
@@ -74,7 +80,15 @@ def run_checks(
     alpha: float | None = None,
     variant_code: str | None = None,
     operator_email: str = "system",
+    segment: TrafficSegment | None = None,
 ) -> dict:
+    segment = segment or segment_service.active_segment(db, experiment.id)
+    if segment is None:
+        raise AppError(
+            "NO_ACTIVE_SEGMENT",
+            409,
+            {"reason": "实验还没有生效投放段，先登记投放内容并完成切换", "experiment": experiment.code},
+        )
     control = variant_service.control_variant(db, experiment.id)
     treatments = [
         item
@@ -88,20 +102,24 @@ def run_checks(
         row[0]
         for row in db.execute(
             select(Assignment.metric_key)
-            .where(Assignment.experiment_id == experiment.id)
+            .where(Assignment.experiment_id == experiment.id, Assignment.segment_id == segment.id)
             .group_by(Assignment.metric_key)
             .order_by(Assignment.metric_key)
         ).all()
     ]
     if not metric_keys:
-        raise AppError("NO_SAMPLES", 422, {"reason": "该实验还没有分流样本，先录入样本再跑指标检验"})
+        raise AppError(
+            "NO_SAMPLES",
+            422,
+            {"reason": f"投放段 {segment.segment_code} 还没有分流样本，先录入样本再跑指标检验"},
+        )
 
     results: list[dict] = []
     for treatment in treatments:
         metrics = []
         for metric_key in metric_keys:
-            n2, c2 = _totals(db, experiment.id, control.id, metric_key)
-            n1, c1 = _totals(db, experiment.id, treatment.id, metric_key)
+            n2, c2 = _totals(db, segment.id, control.id, metric_key)
+            n1, c1 = _totals(db, segment.id, treatment.id, metric_key)
             if n1 <= 0 or n2 <= 0:
                 continue
             metrics.append(
@@ -114,7 +132,7 @@ def run_checks(
                 }
             )
         if not metrics:
-            raise AppError("NO_SAMPLES", 422, {"reason": f"变体 {treatment.code} 没有可用的分流样本"})
+            raise AppError("NO_SAMPLES", 422, {"reason": f"变体 {treatment.code} 在该投放段没有可用的分流样本"})
         try:
             outcome = metric_algorithm.run_metric_tests(
                 metrics,
@@ -127,7 +145,7 @@ def run_checks(
         for item in outcome["items"]:
             row = db.scalar(
                 select(MetricResult).where(
-                    MetricResult.experiment_id == experiment.id,
+                    MetricResult.segment_id == segment.id,
                     MetricResult.variant_code == treatment.code,
                     MetricResult.metric_key == item["metric_key"],
                 )
@@ -135,6 +153,7 @@ def run_checks(
             if row is None:
                 row = MetricResult(
                     experiment_id=experiment.id,
+                    segment_id=segment.id,
                     variant_id=treatment.id,
                     variant_code=treatment.code,
                     variant_name=treatment.name,
@@ -185,9 +204,12 @@ def run_checks(
                 "note": outcome["note"],
             }
         )
+    segment_service.refresh_completeness(db, segment)
     db.flush()
     return {
         "experiment_id": experiment.id,
+        "segment_id": segment.id,
+        "segment_code": segment.segment_code,
         "experiment_code": experiment.code,
         "method": method,
         "method_label": CORRECTION_LABELS.get(method, method),
@@ -200,6 +222,7 @@ def list_metrics(
     db: Session,
     *,
     experiment_id: int | None = None,
+    segment_id: int | None = None,
     variant_code: str | None = None,
     significant: bool | None = None,
     q: str | None = None,
@@ -211,6 +234,9 @@ def list_metrics(
     if experiment_id:
         stmt = stmt.where(MetricResult.experiment_id == experiment_id)
         count_stmt = count_stmt.where(MetricResult.experiment_id == experiment_id)
+    if segment_id:
+        stmt = stmt.where(MetricResult.segment_id == segment_id)
+        count_stmt = count_stmt.where(MetricResult.segment_id == segment_id)
     if variant_code:
         stmt = stmt.where(MetricResult.variant_code == variant_code)
         count_stmt = count_stmt.where(MetricResult.variant_code == variant_code)
@@ -243,12 +269,22 @@ def list_metrics(
 
 
 def significant_rows(db: Session, limit: int = 5) -> list[dict]:
-    rows = db.scalars(
+    """只统计当前生效投放段的显著指标，避免被顶替段的旧结果污染总览。"""
+    active_ids = [
+        row[0]
+        for row in db.execute(
+            select(Experiment.active_segment_id).where(Experiment.active_segment_id.is_not(None))
+        ).all()
+    ]
+    stmt = (
         select(MetricResult)
         .where(MetricResult.significant.is_(True))
         .order_by(MetricResult.q_value, MetricResult.lift.desc())
         .limit(limit)
-    ).all()
+    )
+    if active_ids:
+        stmt = stmt.where(MetricResult.segment_id.in_(active_ids))
+    rows = db.scalars(stmt).all()
     experiment_codes = {
         item.id: (item.code, item.name)
         for item in db.scalars(select(Experiment).where(Experiment.id.in_([row.experiment_id for row in rows]))).all()

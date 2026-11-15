@@ -31,15 +31,16 @@ PERMISSIONS: dict[str, set[str]] = {
         "srm:read", "srm:run",
         "metric:read", "metric:run",
         "decision:read", "decision:write",
+        "segment:read", "segment:write",
         "export:read", "audit:read", "overview:read",
     },
     Role.ANALYST.value: {
         "experiment:read", "assignment:read", "srm:read", "metric:read",
-        "decision:read", "export:read", "overview:read",
+        "decision:read", "segment:read", "export:read", "overview:read",
     },
     Role.VIEWER.value: {
         "experiment:read", "assignment:read", "srm:read", "metric:read",
-        "decision:read", "overview:read",
+        "decision:read", "segment:read", "overview:read",
     },
 }
 
@@ -47,6 +48,7 @@ EXPERIMENT_WRITE_ROLES = (Role.ADMIN.value,)
 ASSIGNMENT_WRITE_ROLES = (Role.ADMIN.value,)
 CHECK_ROLES = (Role.ADMIN.value,)
 DECISION_ROLES = (Role.ADMIN.value,)
+SEGMENT_WRITE_ROLES = (Role.ADMIN.value,)
 EXPORT_ROLES = (Role.ADMIN.value, Role.ANALYST.value)
 AUDIT_ROLES = (Role.ADMIN.value,)
 READ_ROLES = (Role.ADMIN.value, Role.ANALYST.value, Role.VIEWER.value)

@@ -17,12 +17,18 @@ from src.utils.timeutil import utcnow
 class Assignment(Base):
     __tablename__ = "assignments"
     __table_args__ = (
-        UniqueConstraint("experiment_id", "variant_id", "channel", "metric_key", "stat_date", name="uq_assignment_cell"),
+        UniqueConstraint(
+            "segment_id", "variant_id", "channel", "metric_key", "stat_date", name="uq_assignment_cell"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     experiment_id: Mapped[int] = mapped_column(ForeignKey("experiments.id", ondelete="CASCADE"), index=True)
     variant_id: Mapped[int] = mapped_column(ForeignKey("variants.id", ondelete="CASCADE"), index=True)
+    # 样本绑定到实际投放段：同一组名换内容后，新样本进新段，绝不与旧段混算
+    segment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("traffic_segments.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     channel: Mapped[str] = mapped_column(String(20), index=True)
     metric_key: Mapped[str] = mapped_column(String(40), index=True)
     stat_date: Mapped[date] = mapped_column(Date, index=True)

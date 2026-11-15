@@ -34,16 +34,40 @@
 密码统一 `Demo@2026`。跨权调用返回真实 HTTP 状态：无 token **401**，viewer 写/导出/审计 **403**，
 非法参数 **422**，重复自然键（实验编号 / 分流样本格 / 同一实验的第二条决策）**409**。
 
-## 3. 业务模块表（6 个）
+## 3. 业务模块表（7 个）
 
 | # | 业务模块 | 对应页面 | 后端 services / controller | 主要 API |
 |---|---|---|---|---|
+| ⓪ | 投放段（内容绑定与原子切换） | 各页投放段横幅/时间线 · `#/assignments` 登记与切换 | `segment_service` · `segment_controller` | `GET/POST /api/experiments/{id}/segments`、`POST /api/experiments/{id}/segments/cutover` |
 | ① | 实验登记（实验 + 变体） | `#/experiments` 实验登记 | `experiment_service` / `variant_service` · `experiment_controller` | `GET/POST /api/experiments`、`GET/PATCH /api/experiments/{id}` |
-| ② | 分流样本接入（变体×渠道×日期×指标） | `#/assignments` 样本与分流 | `assignment_service` · `assignment_controller` | `GET /api/experiments/{id}/samples`、`GET/POST /api/experiments/{id}/assignments` |
-| ③ | SRM 与功效校验（算法 A） | `#/assignments`（SRM 卡）+ `#/overview`（告警） | `algorithms/srm.py` + `stats.py` · `srm_service` · `metric_controller` | `GET /api/experiments/{id}/srm`、`POST /api/experiments/{id}/srm-check` |
-| ④ | 指标检验（算法 B） | `#/metrics` 指标检验 | `algorithms/metric_test.py` · `metric_service` · `metric_controller` | `GET /api/metrics`、`POST /api/experiments/{id}/metric-tests` |
-| ⑤ | 多重比较与决策 | `#/metrics`（q 值对比）+ `#/decisions` | `metric_service` / `decision_service` · `decision_controller` | `GET /api/decisions`、`POST /api/experiments/{id}/decisions` |
-| ⑥ | 报告导出与台账总览 | `#/decisions`（导出）+ `#/overview` | `export_service` / `overview_service` · `export_controller`、`overview_service` | `GET /api/exports/{experiments,assignments,metrics,decisions}.csv`、`GET /api/overview` |
+| ② | 分流样本接入（投放段×变体×渠道×日期×指标） | `#/assignments` 样本与分流 | `assignment_service` · `assignment_controller` | `GET /api/experiments/{id}/samples`、`GET/POST /api/experiments/{id}/assignments` |
+| ③ | SRM 与功效校验（算法 A，按投放段固化） | `#/assignments`（SRM 卡）+ `#/overview`（告警） | `algorithms/srm.py` + `stats.py` · `srm_service` · `metric_controller` | `GET /api/experiments/{id}/srm`、`POST /api/experiments/{id}/srm-check` |
+| ④ | 指标检验（算法 B，按投放段隔离） | `#/metrics` 指标检验 | `algorithms/metric_test.py` · `metric_service` · `metric_controller` | `GET /api/metrics`、`POST /api/experiments/{id}/metric-tests` |
+| ⑤ | 多重比较与决策（结论绑定投放段） | `#/metrics`（q 值对比）+ `#/decisions` | `metric_service` / `decision_service` · `decision_controller` | `GET /api/decisions`、`POST /api/experiments/{id}/decisions` |
+| ⑥ | 报告导出与台账总览（每套结论标注投放内容） | `#/decisions`（导出）+ `#/overview` | `export_service` / `overview_service` · `export_controller`、`overview_service` | `GET /api/exports/{experiments,assignments,metrics,decisions}.csv`、`GET /api/overview` |
+
+### 投放段（traffic segment）口径——内容与结论强绑定
+
+实验组页面内容被替换后，新旧样本若仍按同一组名累计，分流校验与指标会被拼成「一次实验」，
+负责人可能据此错误上线。系统用 **投放段** 作为「一次实际投放内容」的版本与事务边界：
+
+- **内容绑定样本**：每次实际投放内容（`content_ref` + 规范化 `content_hash` 指纹）对应一个投放段；
+  样本、SRM 分流判断、全部指标检验、上线决策都带 `segment_id`，不同段绝不混算。
+- **幂等建段**：唯一约束落在 `(dedup_slot, content_hash)`，同一变更重复提交/重试只复用同一 building 段，
+  不重复建段；字段顺序不同但内容相同指纹一致。失败/已顶替段释放槽位，允许就同一内容重新登记候选段。
+- **完整性闸门**：同一段的「样本 + SRM 分流判断 + 全部指标」三块齐备（`complete`）才允许 cutover 与出决策；
+  缺任一块即拒绝，页面用三个圆点实时展示就绪状态。
+- **原子切换、不露半套**：cutover 在单事务内做完整性复核 → 旧段顶替/旧决策失效 → 新段激活 → 实验指针切换。
+  新段完整计算成功前不切换决策依据；失败则整笔回滚、building 段按错误类型置 `failed` 或保留待重试，
+  旧 active 段的完整结果继续对外。
+- **内容变化、旧结论立即失效**：登记更新的投放内容会立刻把当前有效决策 `is_valid=0`（历史保留、原因留痕），
+  但旧 active 段在新段 cutover 成功前仍是数据依据（标记 `stale`），页面与导出明确提示「结论已失效」。
+- **处处可追溯**：页面（横幅/时间线/详情/总览）与四类 CSV 导出都标注每套结论对应的投放段编号与投放内容。
+
+投放段状态机：`building`（构建中）→ `active`（生效中，每实验至多一个）；
+`superseded`（cutover 成功后被新段顶替）、`failed`（完整性闸门失败作废）。
+跨 MySQL/PostgreSQL 的「部分唯一」约束用可空槽位列实现（`active_slot` / `dedup_slot` / `valid_slot`，
+唯一索引允许多个 NULL），旧库由 `src/config/migrations.py` 做幂等兼容迁移并回填 baseline 投放段。
 
 横切能力（不算业务模块）：登录/JWT、角色鉴权、审计日志、限流、worker 心跳。
 
@@ -96,10 +120,13 @@ cd frontend/site && python -m http.server 5173
 ```text
 backend/
   src/{config,constants,controllers,middlewares,models,routes,schemas,services,utils}
+  src/models/traffic_segment.py, src/models/srm_result.py   # 投放段 + 按段固化的 SRM 结果
+  src/services/segment_service.py                           # 内容绑定/幂等建段/原子切换/完整性闸门
+  src/config/migrations.py                                  # 旧库幂等兼容迁移（槽位唯一索引）
   src/services/algorithms/{stats,srm,metric_test}.py   # 两个算法 + 统计底座
   scripts/{seed_demo.py,demo_config.py,worker_healthcheck.sh}
   migrations/  tests/
-frontend/site/{index.html,css/{tokens,app}.css,js/{config,api,store,ui,app}.js,js/pages/*.js}
+frontend/site/{index.html,css/{tokens,app}.css,js/{config,api,store,ui,app,segment-ui}.js,js/pages/*.js}
 ```
 
 ## 9. 环境变量
@@ -128,7 +155,9 @@ frontend/site/{index.html,css/{tokens,app}.css,js/{config,api,store,ui,app}.js,j
 - 结论：`q < 0.05` 且 Δ>0 → `ship`（上线）；`q < 0.05` 且 Δ<0 → `stop`（停止）；否则 `continue`（继续观察）。
 - 失败态：样本量为 0、转化数越界、method 非 `bh|bonferroni` → 422。
 
-两个算法都是纯函数（除落库层），同样输入两次逐位一致；`backend/tests/` 覆盖正常 / 边界 / 确定性共 18 个用例。
+两个算法都是纯函数（除落库层），同样输入两次逐位一致；`backend/tests/` 覆盖正常 / 边界 / 确定性共 21 个算法与权限用例，
+另有 `test_traffic_segment.py` 7 个用例覆盖投放段的内容绑定、幂等、原子切换、失效与完整性闸门（合计 28 个）。
+两个算法的落库层均按投放段隔离：`srm_results` 与 `metric_results` 各存各段，只有 active 段的 SRM 才回写实验快照。
 
 ## 11. 共享枚举出现位置
 
@@ -137,6 +166,7 @@ frontend/site/{index.html,css/{tokens,app}.css,js/{config,api,store,ui,app}.js,j
 | 角色 `admin/analyst/viewer` | `backend/src/constants/{roles,enums}.py` | `frontend/site/js/config.js`（`ROLE_LABELS` / `PERMISSIONS`） |
 | 实验状态 `draft/running/paused/finished/archived` | `backend/src/constants/enums.py` | `frontend/site/js/config.js`（`ENUMS.experimentStatus`） |
 | 决策结论 `ship/continue/stop` | `backend/src/constants/enums.py` | `frontend/site/js/config.js`（`ENUMS.verdict`） |
+| 投放段状态 `building/active/superseded/failed` | `backend/src/models/traffic_segment.py` | `frontend/site/js/config.js`（`ENUMS.segmentStatus`） |
 | SRM 状态 `balanced/srm/unknown` | `backend/src/constants/enums.py` | `frontend/site/js/config.js`（`ENUMS.srm`） |
 | 渠道 `feed/push/search/mp` | `backend/src/constants/enums.py` | `frontend/site/js/config.js`（`ENUMS.channel`） |
 | 指标口径 `cart_rate/order_rate/retention_d1/click_rate/search_success` | `backend/src/constants/enums.py` | `frontend/site/js/config.js`（`ENUMS.metric`） |

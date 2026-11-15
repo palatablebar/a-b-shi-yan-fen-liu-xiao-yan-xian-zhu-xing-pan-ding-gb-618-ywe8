@@ -13,11 +13,15 @@ from src.utils.timeutil import utcnow
 class MetricResult(Base):
     __tablename__ = "metric_results"
     __table_args__ = (
-        UniqueConstraint("experiment_id", "variant_code", "metric_key", name="uq_metric_experiment_variant_metric"),
+        # 同一投放段下 (变体, 指标) 唯一；换内容 = 新段，旧结果原样保留
+        UniqueConstraint("segment_id", "variant_code", "metric_key", name="uq_metric_experiment_variant_metric"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     experiment_id: Mapped[int] = mapped_column(ForeignKey("experiments.id", ondelete="CASCADE"), index=True)
+    segment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("traffic_segments.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     variant_id: Mapped[int | None] = mapped_column(ForeignKey("variants.id", ondelete="SET NULL"), nullable=True)
     variant_code: Mapped[str] = mapped_column(String(40), index=True)
     variant_name: Mapped[str] = mapped_column(String(120), default="")

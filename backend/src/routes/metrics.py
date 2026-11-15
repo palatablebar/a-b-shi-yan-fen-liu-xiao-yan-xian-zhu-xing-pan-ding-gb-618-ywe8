@@ -16,6 +16,7 @@ router = APIRouter(tags=["metrics"])
 @router.get("/metrics")
 def list_metrics(
     experiment_id: int | None = None,
+    segment_id: int | None = None,
     variant_code: str | None = None,
     significant: bool | None = None,
     q: str | None = None,
@@ -28,6 +29,7 @@ def list_metrics(
     return metric_controller.list_metrics(
         db,
         experiment_id=experiment_id,
+        segment_id=segment_id,
         variant_code=variant_code,
         significant=significant,
         q=q,
@@ -39,10 +41,11 @@ def list_metrics(
 @router.get("/experiments/{experiment_id}/srm")
 def get_srm(
     experiment_id: int,
+    segment_id: int | None = None,
     db: Session = Depends(get_db),
     principal: dict = Depends(require_roles(*READ_ROLES)),
 ) -> dict:
-    return metric_controller.srm_snapshot(db, experiment_id)
+    return metric_controller.srm_snapshot(db, experiment_id, segment_id)
 
 
 @router.post("/experiments/{experiment_id}/srm-check")

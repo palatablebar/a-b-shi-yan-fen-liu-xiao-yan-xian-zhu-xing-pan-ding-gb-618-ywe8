@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { ENUMS, can, verdictTone } from '../config.js';
+import { segmentTimeline } from '../segment-ui.js';
 import {
   badge,
   drawer,
@@ -109,11 +110,15 @@ export const decisionsPage = {
       return;
     }
 
-    const decidedIds = new Set(decisions.items.map((item) => String(item.experiment_id)));
+    const decidedIds = new Set(
+      decisions.items.filter((row) => row.is_valid).map((item) => String(item.experiment_id)),
+    );
     const pendingExperiments = experiments.items.filter((item) => !decidedIds.has(String(item.id)));
     const details = await Promise.all(
       pendingExperiments.map((item) => api.get(`/api/experiments/${item.id}`).catch(() => item)),
     );
+    // 跨实验决策页：只在某实验存在多投放段（发生过内容变更）时展示其时间线，说明结论与内容的绑定
+    const multiSegmentDetail = details.find((item) => item && item.segments && item.segments.length > 1) || null;
     const pending = details
       .map((experiment) => {
         const primary = (experiment.metrics || []).find((metric) => metric.is_primary) || {};
@@ -158,9 +163,24 @@ export const decisionsPage = {
           ),
           columns: [
             { key: 'experiment_code', label: '实验', className: 'mono nowrap' },
-            { key: 'experiment_name', label: '名称' },
+            {
+              key: 'segment_code',
+              label: '对应投放内容',
+              render: (row) =>
+                `<b class="mono">${esc(row.segment_code || '—')}</b><div class="tiny muted">${esc(row.content_ref || '')}</div>`,
+            },
             { key: 'verdict', label: '结论', render: (row) => badge(verdictTone(row.verdict), row.verdict_label) },
-            { key: 'rationale', label: '理由', render: (row) => `<span>${esc(row.rationale)}</span>` },
+            {
+              key: 'is_valid',
+              label: '有效性',
+              render: (row) => (row.is_valid ? badge('ok', '有效') : badge('srm', '已失效')),
+            },
+            {
+              key: 'rationale',
+              label: '理由',
+              render: (row) =>
+                `<span>${esc(row.rationale)}</span>${row.is_valid ? '' : `<div class="tiny muted">${esc(row.invalid_reason || '')}</div>`}`,
+            },
             { key: 'decided_by', label: '决策人', className: 'mono nowrap' },
             { key: 'decided_at', label: '时间', render: (row) => fmtTime(row.decided_at) },
           ],
@@ -168,19 +188,29 @@ export const decisionsPage = {
         })}
       </section>
 
+      ${multiSegmentDetail ? segmentTimeline(multiSegmentDetail.segments) : ''}
+
       ${
         pending.length
           ? `<div class="grid-2">
               ${pending
                 .slice(0, 2)
                 .map(
-                  (item) => `<section class="panel">
+                  (item) => `<section class="panel ${item.experiment.active_segment && item.experiment.active_segment.stale ? 'is-stale' : ''}">
                     <div class="panel-head">
                       <h2>${esc(item.experiment.code)} 待决策</h2>
-                      ${badge(verdictTone(item.suggested), `建议 ${ENUMS.verdict[item.suggested]}`)}
+                      ${
+                        item.experiment.active_segment && item.experiment.active_segment.stale
+                          ? badge('srm', '新内容在途·旧结论失效')
+                          : badge(verdictTone(item.suggested), `建议 ${ENUMS.verdict[item.suggested]}`)
+                      }
                     </div>
                     <div class="panel-body" style="display:grid;gap:6px">
                       <div><b>${esc(item.experiment.name)}</b></div>
+                      <div class="mono muted">
+                        投放段 ${esc(item.experiment.active_segment ? item.experiment.active_segment.segment_code : '—')} ·
+                        ${esc(item.experiment.active_segment ? item.experiment.active_segment.content_ref : '')}
+                      </div>
                       <div class="mono muted">${esc(item.experiment.primary_metric_label)} · SRM ${esc(item.experiment.srm.status_label)} · p=${fmtP(
                         item.experiment.srm.p_value,
                       )}</div>

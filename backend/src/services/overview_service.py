@@ -17,7 +17,19 @@ from src.models.assignment import Assignment
 from src.models.decision import Decision
 from src.models.experiment import Experiment
 from src.models.metric_result import MetricResult
+from src.models.traffic_segment import TrafficSegment
 from src.utils.timeutil import iso_date, local_now, utcnow
+
+
+def _active_segment_ids(db: Session) -> list[int]:
+    return [
+        int(row[0])
+        for row in db.execute(
+            select(TrafficSegment.id).where(
+                TrafficSegment.is_active.is_(True), TrafficSegment.status == "active"
+            )
+        ).all()
+    ]
 
 
 def worker_alive() -> bool:
@@ -33,6 +45,8 @@ def worker_alive() -> bool:
 
 
 def overview(db: Session) -> dict:
+    # 总览只反映当前生效投放段：被顶替段的旧样本/指标/失效决策不计入决策依据
+    active_ids = _active_segment_ids(db)
     experiments_total = db.scalar(select(func.count()).select_from(Experiment)) or 0
     running_total = (
         db.scalar(select(func.count()).select_from(Experiment).where(Experiment.status == "running")) or 0
@@ -40,28 +54,49 @@ def overview(db: Session) -> dict:
     srm_alarm_total = (
         db.scalar(select(func.count()).select_from(Experiment).where(Experiment.has_srm_alarm.is_(True))) or 0
     )
-    metric_total = db.scalar(select(func.count()).select_from(MetricResult)) or 0
-    significant_total = (
-        db.scalar(select(func.count()).select_from(MetricResult).where(MetricResult.significant.is_(True))) or 0
+    metric_total = (
+        db.scalar(
+            select(func.count())
+            .select_from(MetricResult)
+            .where(MetricResult.segment_id.in_(active_ids))
+        )
+        if active_ids
+        else 0
     )
-    decided_total = db.scalar(select(func.count()).select_from(Decision)) or 0
+    significant_total = (
+        db.scalar(
+            select(func.count())
+            .select_from(MetricResult)
+            .where(MetricResult.significant.is_(True), MetricResult.segment_id.in_(active_ids))
+        )
+        if active_ids
+        else 0
+    )
+    decided_total = (
+        db.scalar(select(func.count()).select_from(Decision).where(Decision.is_valid.is_(True))) or 0
+    )
     pending_total = max(0, experiments_total - decided_total)
 
     status_rows = db.execute(select(Experiment.status, func.count()).group_by(Experiment.status)).all()
     status_map = dict(status_rows)
-    verdict_rows = db.execute(select(Decision.verdict, func.count()).group_by(Decision.verdict)).all()
+    verdict_rows = db.execute(
+        select(Decision.verdict, func.count()).where(Decision.is_valid.is_(True)).group_by(Decision.verdict)
+    ).all()
     srm_rows = db.execute(select(Experiment.srm_status, func.count()).group_by(Experiment.srm_status)).all()
 
     alarm_experiments = db.scalars(
         select(Experiment).where(Experiment.has_srm_alarm.is_(True)).order_by(Experiment.srm_p_value)
     ).all()
 
-    significant_rows = db.scalars(
+    significant_query = (
         select(MetricResult)
         .where(MetricResult.significant.is_(True))
         .order_by(MetricResult.q_value, MetricResult.lift.desc())
         .limit(6)
-    ).all()
+    )
+    if active_ids:
+        significant_query = significant_query.where(MetricResult.segment_id.in_(active_ids))
+    significant_rows = db.scalars(significant_query).all()
     experiment_codes = {
         item.id: (item.code, item.name)
         for item in db.scalars(
@@ -69,7 +104,9 @@ def overview(db: Session) -> dict:
         ).all()
     } if significant_rows else {}
 
-    latest_date = db.scalar(select(func.max(Assignment.stat_date)))
+    latest_date = db.scalar(
+        select(func.max(Assignment.stat_date)).where(Assignment.segment_id.in_(active_ids))
+    ) if active_ids else None
     trend = []
     if latest_date is not None:
         start = latest_date - timedelta(days=6)
@@ -79,7 +116,11 @@ def overview(db: Session) -> dict:
                 func.coalesce(func.sum(Assignment.samples), 0),
                 func.coalesce(func.sum(Assignment.conversions), 0),
             )
-            .where(Assignment.stat_date >= start, Assignment.stat_date <= latest_date)
+            .where(
+                Assignment.stat_date >= start,
+                Assignment.stat_date <= latest_date,
+                Assignment.segment_id.in_(active_ids),
+            )
             .group_by(Assignment.stat_date)
             .order_by(Assignment.stat_date)
         ).all()
@@ -96,9 +137,12 @@ def overview(db: Session) -> dict:
                 }
             )
 
-    latest_metrics = db.scalars(
+    latest_metrics_query = (
         select(MetricResult).order_by(MetricResult.computed_at.desc(), MetricResult.id.desc()).limit(5)
-    ).all()
+    )
+    if active_ids:
+        latest_metrics_query = latest_metrics_query.where(MetricResult.segment_id.in_(active_ids))
+    latest_metrics = db.scalars(latest_metrics_query).all()
 
     return {
         "experiments_total": experiments_total,
@@ -108,8 +152,22 @@ def overview(db: Session) -> dict:
         "significant_total": significant_total,
         "decided_total": decided_total,
         "pending_total": pending_total,
-        "sample_total": db.scalar(select(func.coalesce(func.sum(Assignment.samples), 0))) or 0,
-        "assignment_rows": db.scalar(select(func.count()).select_from(Assignment)) or 0,
+        "sample_total": (
+            db.scalar(
+                select(func.coalesce(func.sum(Assignment.samples), 0)).where(
+                    Assignment.segment_id.in_(active_ids)
+                )
+            )
+            if active_ids
+            else 0
+        ) or 0,
+        "assignment_rows": (
+            db.scalar(
+                select(func.count()).select_from(Assignment).where(Assignment.segment_id.in_(active_ids))
+            )
+            if active_ids
+            else 0
+        ) or 0,
         "worker_alive": worker_alive(),
         "generated_at": utcnow().isoformat(timespec="seconds") + "Z",
         "anchor_date": iso_date(latest_date),
@@ -188,6 +246,9 @@ def overview(db: Session) -> dict:
 
 def decision_summary(db: Session) -> list[dict]:
     rows = db.execute(
-        select(Decision.verdict, func.count()).group_by(Decision.verdict).order_by(Decision.verdict)
+        select(Decision.verdict, func.count())
+        .where(Decision.is_valid.is_(True))
+        .group_by(Decision.verdict)
+        .order_by(Decision.verdict)
     ).all()
     return [{"key": key, "label": VERDICT_LABELS.get(key, key), "count": int(count)} for key, count in rows]

@@ -10,7 +10,9 @@ from src.models.user import User  # noqa: E402
 from src.models.audit import AuditLog  # noqa: E402
 from src.models.experiment import Experiment  # noqa: E402
 from src.models.variant import Variant  # noqa: E402
+from src.models.traffic_segment import TrafficSegment  # noqa: E402
 from src.models.assignment import Assignment  # noqa: E402
+from src.models.srm_result import SrmResult  # noqa: E402
 from src.models.metric_result import MetricResult  # noqa: E402
 from src.models.decision import Decision  # noqa: E402
 
@@ -20,7 +22,9 @@ __all__ = [
     "AuditLog",
     "Experiment",
     "Variant",
+    "TrafficSegment",
     "Assignment",
+    "SrmResult",
     "MetricResult",
     "Decision",
 ]

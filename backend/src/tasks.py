@@ -30,18 +30,24 @@ def heartbeat() -> str:
 
 @celery_app.task(name=TASK_DAILY)
 def daily_srm_refresh() -> dict:
-    """每天 07:40 对运行中的实验重算 SRM，分流漂移会立刻出现在总览。"""
+    """每天 07:40 对运行中实验的当前生效投放段重算 SRM，分流漂移立刻进总览。
+
+    只重算 active 段：building 段未切换、superseded 段已失效，都不能影响当前结论。
+    """
     from src.config.database import session_scope
     from src.models.experiment import Experiment
-    from src.services import audit_service, srm_service
+    from src.services import audit_service, segment_service, srm_service
     from src.utils.errors import AppError
 
     done = 0
     with session_scope() as db:
         experiments = db.scalars(select(Experiment).where(Experiment.status == "running")).all()
         for experiment in experiments:
+            segment = segment_service.active_segment(db, experiment.id)
+            if segment is None:
+                continue
             try:
-                result = srm_service.check(db, experiment)
+                result = srm_service.check(db, experiment, segment=segment, operator_email="scheduler@" + settings.app_name + ".io")
             except AppError as exc:
                 logger.warning("daily srm skip %s: %s", experiment.code, exc.code)
                 continue
@@ -53,7 +59,12 @@ def daily_srm_refresh() -> dict:
                 action="srm.check",
                 entity="experiment",
                 entity_id=experiment.id,
-                detail={"trigger": "schedule", "chi2": result["chi2"], "alarm": result["alarm"]},
+                detail={
+                    "trigger": "schedule",
+                    "segment": segment.segment_code,
+                    "chi2": result["chi2"],
+                    "alarm": result["alarm"],
+                },
                 layer="worker",
             )
     logger.info("daily srm refresh finished: %s experiments", done)

@@ -40,10 +40,11 @@ export const PERMISSIONS = {
     'srm:read', 'srm:run',
     'metric:read', 'metric:run',
     'decision:read', 'decision:write',
+    'segment:read', 'segment:write',
     'export:read', 'audit:read',
   ],
-  analyst: ['overview:read', 'experiment:read', 'assignment:read', 'srm:read', 'metric:read', 'decision:read', 'export:read'],
-  viewer: ['overview:read', 'experiment:read', 'assignment:read', 'srm:read', 'metric:read', 'decision:read'],
+  analyst: ['overview:read', 'experiment:read', 'assignment:read', 'srm:read', 'metric:read', 'decision:read', 'segment:read', 'export:read'],
+  viewer: ['overview:read', 'experiment:read', 'assignment:read', 'srm:read', 'metric:read', 'decision:read', 'segment:read'],
 };
 
 export const ENUMS = {
@@ -53,6 +54,12 @@ export const ENUMS = {
     paused: '已暂停',
     finished: '已结束',
     archived: '已归档',
+  },
+  segmentStatus: {
+    building: '构建中',
+    active: '生效中',
+    superseded: '已顶替',
+    failed: '切换失败',
   },
   verdict: {
     ship: '上线',
@@ -99,4 +106,8 @@ export function verdictTone(verdict) {
 
 export function srmTone(status) {
   return { srm: 'srm', balanced: 'ok', unknown: 'pending' }[status] || 'info';
+}
+
+export function segmentTone(status) {
+  return { active: 'ok', building: 'pending', superseded: 'info', failed: 'srm' }[status] || 'info';
 }

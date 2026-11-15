@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { ENUMS, can } from '../config.js';
+import { completenessDots, cutoverSegment, openRegisterSegment, segmentBanner, segmentTimeline } from '../segment-ui.js';
 import {
   badge,
   drawer,
@@ -35,17 +36,18 @@ function pickExperiment(items, preferred) {
   return items[0];
 }
 
-function srmCard(experiment) {
+function srmCard(experiment, segment) {
   const srm = experiment.srm || {};
   const payload = srm.payload || {};
+  const segLabel = segment ? `${segment.segment_code} · ` : '';
   if (!srm.checked_at) {
     return `<div class="panel"><div class="panel-head"><h2>SRM 与功效校验</h2><span class="meta">未校验</span></div>
-      <div class="panel-body"><p class="muted">这个实验还没跑过分流校验。点上方「跑 SRM 校验」，算法会按 χ² 与样本量缺口给出结论。</p></div></div>`;
+      <div class="panel-body"><p class="muted">这个投放段还没跑过分流校验。点上方「跑 SRM 校验」，算法会按 χ² 与样本量缺口给出结论。</p></div></div>`;
   }
   return `<div class="panel">
     <div class="panel-head">
       <h2>SRM 与功效校验</h2>
-      <span class="meta">${fmtTime(srm.checked_at)}</span>
+      <span class="meta">${esc(segLabel)}${fmtTime(srm.checked_at)}</span>
     </div>
     <div class="panel-body" style="display:grid;gap:12px">
       ${splitBar(payload.cells || [], srm.alarm)}
@@ -63,12 +65,13 @@ function srmCard(experiment) {
   </div>`;
 }
 
-function openEntry(view, ctx, experiments) {
+function openEntry(view, ctx, experiments, building) {
   const experiment = pickExperiment(experiments);
   const variants = (experiment && experiment.variants) || [];
+  const targetSegment = building || experiment.active_segment;
   const { root, close } = drawer({
     title: '录入分流样本',
-    subtitle: `${experiment ? experiment.code : ''} · 变体 × 渠道 × 日期 × 指标 唯一`,
+    subtitle: `${experiment ? experiment.code : ''} · 写入投放段 ${targetSegment ? targetSegment.segment_code : '（无生效段）'} · 变体 × 渠道 × 日期 × 指标 唯一`,
     body: `<form id="entry-form" style="display:grid;gap:12px">
       ${field({
         label: '实验',
@@ -115,13 +118,16 @@ function openEntry(view, ctx, experiments) {
         stat_date: form.stat_date.value,
         samples: Number(form.samples.value),
         conversions: Number(form.conversions.value),
+        segment_id: targetSegment ? targetSegment.id : null,
       });
-      toast('样本已写入');
+      toast(`样本已写入投放段 ${targetSegment ? targetSegment.segment_code : ''}`);
       close();
       await assignmentsPage.render(view, ctx);
     } catch (err) {
       errorNode.textContent =
-        err.code === 'CONFLICT' ? '这个 变体×渠道×日期×指标 的样本已存在（409），请改数值或换日期' : errorMessage(err);
+        err.code === 'CONFLICT'
+          ? '这个 投放段×变体×渠道×日期×指标 的样本已存在（409），请改数值或换日期'
+          : errorMessage(err);
     }
   });
 }
@@ -166,13 +172,22 @@ export const assignmentsPage = {
     const matrix = samples.matrix || { variants: [], channels: [] };
     const totalSamples = totals.reduce((sum, item) => sum + item.samples, 0);
     const planned = totals.map((item) => item.ratio).reduce((sum, value) => sum + value, 0) || 1;
+    const activeSegment = samples.segment || samples.experiment?.active_segment || null;
+    const timeline = samples.segments || [];
+    const building = timeline.find((item) => item.status === 'building');
 
     view.innerHTML = `
+      ${segmentBanner(samples.experiment || experiment)}
       <section class="panel">
         <div class="panel-head">
           <h2>样本与分流</h2>
           <div style="display:flex;gap:8px;align-items:center">
             <span class="meta">${num(totalSamples)} 份样本 · ${num(samples.metric_keys.length)} 个指标口径</span>
+            ${
+              can(ctx.user.role, 'segment:write')
+                ? '<button class="btn sm ghost" id="register-segment">登记投放内容</button>'
+                : ''
+            }
             ${
               can(ctx.user.role, 'srm:run')
                 ? '<button class="btn sm accent" id="run-srm">跑 SRM 校验</button>'
@@ -214,7 +229,25 @@ export const assignmentsPage = {
         </div>
       </section>
 
-      ${srmCard(experiment)}
+      ${segmentTimeline(timeline)}
+
+      ${
+        building
+          ? `<section class="panel segment-building">
+              <div class="panel-head"><h2>新投放段构建中 · ${esc(building.segment_code)}</h2>${badge('pending', ENUMS.segmentStatus.building)}</div>
+              <div class="panel-body" style="display:grid;gap:10px">
+                <div class="muted">投放内容：<b class="mono">${esc(building.content_ref || '—')}</b>。把该内容下的样本录入本段，再跑分流判断与全部指标；三块齐备后才允许切换。</div>
+                ${completenessDots(building.completeness)}
+                <div style="display:flex;gap:8px">
+                  <button class="btn sm accent" id="cutover-segment">完整计算并切换决策依据</button>
+                  <span class="tiny muted">切换失败会保留旧版完整结果，不会露出半套新结果</span>
+                </div>
+              </div>
+            </section>`
+          : ''
+      }
+
+      ${srmCard(experiment, activeSegment)}
 
       <div class="grid-2">
         <section class="panel">
@@ -295,17 +328,36 @@ export const assignmentsPage = {
       location.hash = `#/assignments?experiment=${state.experimentId}&metric=${state.metricKey}`;
       assignmentsPage.render(view, ctx);
     });
-    view.querySelector('#entry-sample')?.addEventListener('click', () => openEntry(view, ctx, experiments));
+    view.querySelector('#entry-sample')?.addEventListener('click', () => openEntry(view, ctx, experiments, building));
+    view.querySelector('#register-segment')?.addEventListener('click', () =>
+      openRegisterSegment(experiment.id, ctx.user.role, () => assignmentsPage.render(view, ctx)),
+    );
+    view.querySelector('#cutover-segment')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.textContent = '切换中…';
+      try {
+        const result = await cutoverSegment(experiment.id, building.id);
+        toast(`投放段 ${result.segment_code} 已切换为当前生效依据`);
+        await assignmentsPage.render(view, ctx);
+      } catch (err) {
+        toast(errorMessage(err), 'err');
+        button.disabled = false;
+        button.textContent = '完整计算并切换决策依据';
+      }
+    });
     view.querySelector('#run-srm')?.addEventListener('click', async (event) => {
       const button = event.currentTarget;
       button.disabled = true;
       button.textContent = '校验中…';
       try {
-        const result = await api.post(`/api/experiments/${experiment.id}/srm-check`, {});
+        const result = await api.post(`/api/experiments/${experiment.id}/srm-check`, {
+          segment_id: building ? building.id : (activeSegment ? activeSegment.id : null),
+        });
         toast(
           result.alarm
-            ? `SRM 告警：χ²=${Number(result.chi2).toFixed(2)}，p=${fmtP(result.p_value)}`
-            : `分流均衡：χ²=${Number(result.chi2).toFixed(2)}，p=${fmtP(result.p_value)}`,
+            ? `SRM 告警（${result.segment_code || ''}）：χ²=${Number(result.chi2).toFixed(2)}，p=${fmtP(result.p_value)}`
+            : `分流均衡（${result.segment_code || ''}）：χ²=${Number(result.chi2).toFixed(2)}，p=${fmtP(result.p_value)}`,
           result.alarm ? 'err' : '',
         );
         await assignmentsPage.render(view, ctx);

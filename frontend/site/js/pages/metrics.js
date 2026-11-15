@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { ENUMS, can, verdictTone } from '../config.js';
+import { segmentBanner } from '../segment-ui.js';
 import {
   badge,
   drawer,
@@ -20,6 +21,8 @@ import {
 } from '../ui.js';
 
 const state = { experimentId: '', variantCode: 'all', method: 'bh', q: '' };
+let currentExperiment = null;
+let currentSegmentId = null;
 
 async function loadExperiments() {
   const data = await api.get('/api/experiments', { limit: 50 });
@@ -39,8 +42,9 @@ function pickExperiment(items, preferred) {
 function openMetric(view, ctx, item) {
   const { root } = drawer({
     title: item.metric_name,
-    subtitle: `${item.experiment_code || ''} · ${item.variant_code} · ${item.method_label}`,
+    subtitle: `${item.experiment_code || ''} · 投放段 ${currentExperiment?.active_segment?.segment_code || '—'} · ${item.variant_code} · ${item.method_label}`,
     body: `${kv([
+      ['投放内容', currentExperiment?.active_segment?.content_ref || '—'],
       ['对照样本', `${num(item.control_n)}（转化 ${num(item.control_conversions)}，${pct(item.control_rate, 3)}）`],
       ['实验样本', `${num(item.variant_n)}（转化 ${num(item.variant_conversions)}，${pct(item.variant_rate, 3)}）`],
       ['绝对差', signedPct(item.diff, 3)],
@@ -100,8 +104,17 @@ export const metricsPage = {
     state.experimentId = String(experiment.id);
 
     let data;
+    let detail;
     try {
-      data = await api.get('/api/metrics', { experiment_id: experiment.id, q: state.q, limit: 100 });
+      detail = await api.get(`/api/experiments/${experiment.id}`);
+      currentExperiment = detail;
+      currentSegmentId = detail.active_segment ? detail.active_segment.id : null;
+      data = await api.get('/api/metrics', {
+        experiment_id: experiment.id,
+        segment_id: currentSegmentId,
+        q: state.q,
+        limit: 100,
+      });
     } catch (err) {
       view.innerHTML = errorBox(errorMessage(err));
       view.querySelector('#retry-btn')?.addEventListener('click', () => metricsPage.render(view, ctx));
@@ -116,11 +129,12 @@ export const metricsPage = {
     const methodLabel = ENUMS.correction[items[0] ? items[0].method : state.method] || state.method;
 
     view.innerHTML = `
+      ${segmentBanner(detail)}
       <section class="panel">
         <div class="panel-head">
           <h2>指标检验</h2>
           <div style="display:flex;gap:8px;align-items:center">
-            <span class="meta">${items.length} 个指标 · 校正后显著 ${significantCount} 个</span>
+            <span class="meta">${items.length} 个指标 · 校正后显著 ${significantCount} 个 · 段 ${esc(detail.active_segment ? detail.active_segment.segment_code : '—')}</span>
             ${
               can(ctx.user.role, 'metric:run')
                 ? '<button class="btn sm accent" id="run-metrics">跑指标检验</button>'
@@ -279,10 +293,11 @@ export const metricsPage = {
         const result = await api.post(`/api/experiments/${experiment.id}/metric-tests`, {
           method: filters.querySelector('[name=method]').value,
           variant_code: activeVariant || null,
+          segment_id: currentSegmentId,
         });
         const total = result.total;
         const sig = (result.results || []).reduce((sum, item) => sum + item.significant_count, 0);
-        toast(`${result.method_label}：${total} 条检验，${sig} 条校正后显著`, sig ? '' : 'err');
+        toast(`${result.method_label}（${result.segment_code || ''}）：${total} 条检验，${sig} 条校正后显著`, sig ? '' : 'err');
         await metricsPage.render(view, ctx);
       } catch (err) {
         toast(errorMessage(err), 'err');

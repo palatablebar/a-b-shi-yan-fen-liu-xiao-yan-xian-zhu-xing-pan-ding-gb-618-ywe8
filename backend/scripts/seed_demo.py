@@ -25,9 +25,17 @@ from src.models.audit import AuditLog
 from src.models.decision import Decision
 from src.models.experiment import Experiment
 from src.models.metric_result import MetricResult
+from src.models.traffic_segment import TrafficSegment
 from src.models.user import User
 from src.models.variant import Variant
-from src.services import assignment_service, decision_service, experiment_service, metric_service, srm_service
+from src.services import (
+    assignment_service,
+    decision_service,
+    experiment_service,
+    metric_service,
+    segment_service,
+    srm_service,
+)
 from src.utils.security import hash_password
 
 from scripts.demo_config import (
@@ -119,17 +127,46 @@ def ensure_variants(db) -> dict[str, dict[str, Variant]]:
     return mapping
 
 
-def ensure_assignments(db, variants: dict[str, dict[str, Variant]]) -> int:
+def ensure_segments(db) -> dict[str, TrafficSegment]:
+    """每个实验保证一个 baseline 生效投放段，承接全部 seed 样本与结论（幂等）。"""
+    mapping: dict[str, TrafficSegment] = {}
+    experiments = db.scalars(select(Experiment)).all()
+    for experiment in experiments:
+        existing = segment_service.active_segment(db, experiment.id)
+        if existing is None:
+            segment, _ = segment_service.register_or_get(
+                db,
+                experiment,
+                content_ref="baseline://initial",
+                content_payload={"source": "seed", "note": "初始化投放段，承接演示数据"},
+                operator_email=SEED_OPERATOR,
+            )
+            # seed 的 baseline 段直接作为生效段（后续 check 会把完整性补齐并 cutover）
+            segment.status = "active"
+            segment.is_active = True
+            segment.active_slot = experiment.id
+            segment.dedup_slot = experiment.id
+            segment.activated_at = segment.created_at
+            experiment.active_segment_id = segment.id
+            existing = segment
+        mapping[experiment.code] = existing
+    db.flush()
+    return mapping
+
+
+def ensure_assignments(db, variants: dict[str, dict[str, Variant]], segments: dict[str, TrafficSegment]) -> int:
     experiments = {item.code: item for item in db.scalars(select(Experiment)).all()}
     for spec in EXPERIMENTS:
         experiment = experiments.get(spec["code"])
         if experiment is None:
             continue
+        segment = segments[spec["code"]]
         for cell in assignment_cells(spec):
             variant = variants[spec["code"]][cell["variant_code"]]
             assignment_service.upsert_assignment(
                 db,
                 experiment,
+                segment=segment,
                 variant_id=variant.id,
                 channel=cell["channel"],
                 metric_key=cell["metric_key"],
@@ -141,22 +178,33 @@ def ensure_assignments(db, variants: dict[str, dict[str, Variant]]) -> int:
     return db.scalar(select(func.count()).select_from(Assignment)) or 0
 
 
-def run_checks(db) -> int:
+def run_checks(db, segments: dict[str, TrafficSegment]) -> int:
     experiments = db.scalars(select(Experiment).order_by(Experiment.id)).all()
     for experiment in experiments:
-        srm_service.check(db, experiment)
+        segment = segments[experiment.code]
+        srm_service.check(db, experiment, segment=segment, operator_email=SEED_OPERATOR)
         metric_service.run_checks(
             db,
             experiment,
             method="bh",
             variant_code=None,
             operator_email=SEED_OPERATOR,
+            segment=segment,
         )
+        # baseline 段样本/校验/指标已齐备，固化为完整且生效
+        segment_service.refresh_completeness(db, segment)
+        segment.status = "active"
+        segment.is_active = True
+        if segment.activated_at is None:
+            from src.utils.timeutil import utcnow
+
+            segment.activated_at = utcnow()
+        experiment.active_segment_id = segment.id
     db.flush()
     return db.scalar(select(func.count()).select_from(MetricResult)) or 0
 
 
-def ensure_decisions(db) -> int:
+def ensure_decisions(db, segments: dict[str, TrafficSegment]) -> int:
     experiments = {item.code: item for item in db.scalars(select(Experiment)).all()}
     for code, (verdict, template) in DECISIONS.items():
         experiment = experiments.get(code)
@@ -165,9 +213,10 @@ def ensure_decisions(db) -> int:
         existing = decision_service.get_by_experiment(db, experiment.id)
         if existing is not None:
             continue
+        segment = segments[code]
         primary = db.scalar(
             select(MetricResult).where(
-                MetricResult.experiment_id == experiment.id,
+                MetricResult.segment_id == segment.id,
                 MetricResult.is_primary.is_(True),
             )
         )
@@ -179,14 +228,13 @@ def ensure_decisions(db) -> int:
             "lift": primary.lift if primary else 0.0,
             "q": primary.q_value if primary else 1.0,
         }
-        decision_service.create(
+        decision = decision_service.create(
             db,
             experiment,
             {"verdict": verdict, "rationale": template.format(**context)},
             decided_by="admin@abcheck.io",
         )
         experiment.status = "finished"
-        decision = decision_service.get_by_experiment(db, experiment.id)
         if decision is not None:
             decision.seed_key = f"seed-decision-{code}"
     db.flush()
@@ -221,14 +269,15 @@ def seed_all() -> dict:
         users = ensure_users(db)
         experiments = ensure_experiments(db)
         variants = ensure_variants(db)
-        assignments = ensure_assignments(db, variants)
-        findings = run_checks(db)
-        ensure_decisions(db)
+        segments = ensure_segments(db)
+        assignments = ensure_assignments(db, variants, segments)
+        findings = run_checks(db, segments)
+        ensure_decisions(db, segments)
         ensure_audit(db)
         pending = db.scalar(
             select(func.count())
             .select_from(Experiment)
-            .where(~Experiment.id.in_(select(Decision.experiment_id)))
+            .where(~Experiment.id.in_(select(Decision.experiment_id).where(Decision.is_valid.is_(True))))
         ) or 0
         summary = (
             f"SEED_SUMMARY brand=abcheck users={users} sources={experiments} "

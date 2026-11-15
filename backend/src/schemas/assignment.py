@@ -18,6 +18,8 @@ class AssignmentIn(BaseModel):
     stat_date: date
     samples: int = Field(ge=0, le=50_000_000)
     conversions: int = Field(ge=0, le=50_000_000)
+    # 不传则写入当前 active 投放段；向 building 段补样本时显式传该段 id
+    segment_id: int | None = Field(default=None)
 
     @model_validator(mode="after")
     def _conversions_not_more_than_samples(self) -> "AssignmentIn":

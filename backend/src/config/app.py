@@ -23,6 +23,14 @@ def _bootstrap_database() -> None:
 
     wait_for_db()
     Base.metadata.create_all(bind=engine)
+    # 已存在的旧库：补投放段相关列/索引（幂等），再回填 baseline 投放段承接存量数据
+    from src.config.database import session_scope
+    from src.config.migrations import run_compat_migrations
+    from src.services.segment_service import ensure_baseline_segments
+
+    run_compat_migrations()
+    with session_scope() as db:
+        ensure_baseline_segments(db)
 
 
 def _run_seed_once() -> None:

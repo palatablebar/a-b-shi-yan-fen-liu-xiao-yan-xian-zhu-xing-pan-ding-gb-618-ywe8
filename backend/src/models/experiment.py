@@ -40,6 +40,9 @@ class Experiment(Base):
     srm_payload: Mapped[dict] = mapped_column(JSON, default=dict)
     has_srm_alarm: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
+    # 当前唯一生效的投放段：页面、导出、决策都以该段为准；切换前不改动这个指针
+    active_segment_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+
     seed_key: Mapped[str | None] = mapped_column(String(120), unique=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

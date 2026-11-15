@@ -1314,3 +1314,105 @@ pre.code {
     padding-bottom: 30px;
   }
 }
+
+/* ===== 投放段（traffic segment）：内容与结论绑定 ===== */
+.segment-banner {
+  border-left: 4px solid var(--accent);
+}
+.segment-banner.is-stale {
+  border-left-color: var(--danger);
+  background: var(--danger-wash);
+}
+.segment-banner-body {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+.segment-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.segment-id b {
+  font-size: 1.02rem;
+}
+.segment-content {
+  flex: 1 1 260px;
+  min-width: 220px;
+  display: grid;
+  gap: 2px;
+}
+.segment-ref {
+  font-size: 0.95rem;
+  color: var(--ink);
+  word-break: break-all;
+}
+.segment-complete {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+}
+.segment-warn {
+  color: var(--danger);
+  font-weight: 600;
+}
+.segment-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.completeness {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.completeness .dot {
+  font-size: var(--fs-sm);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--rule-strong);
+  white-space: nowrap;
+}
+.completeness .dot.on {
+  color: var(--ok);
+  border-color: var(--ok);
+  background: var(--ok-wash);
+}
+.completeness .dot.off {
+  color: var(--ink-faint);
+  background: var(--paper-2);
+}
+.segment-table tr.is-active-row {
+  background: var(--accent-wash);
+}
+.segment-building {
+  border: 1px dashed var(--accent-ink);
+}
+.panel.is-stale {
+  border-color: var(--danger);
+}
+.segment-banner .eyebrow,
+.segment-table .eyebrow {
+  margin: 0;
+}
+
+/* 投放内容指纹载荷等独立输入控件，沿用 .field 输入框视觉 */
+textarea.input {
+  width: 100%;
+  border: 1px solid var(--rule-strong);
+  border-bottom-width: 2px;
+  background: var(--paper);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  resize: vertical;
+}
+textarea.input:focus {
+  border-color: var(--accent-ink);
+  box-shadow: 0 0 0 3px var(--accent-wash);
+}

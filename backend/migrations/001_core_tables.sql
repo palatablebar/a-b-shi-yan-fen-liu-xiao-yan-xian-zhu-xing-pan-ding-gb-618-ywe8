@@ -1,5 +1,7 @@
 -- 参考建表语句（运行时由 SQLAlchemy Base.metadata.create_all 建表）。
 -- 口径：MySQL 8.0 / utf8mb4；assignments 的自然键保证 seed 幂等。
+-- 投放段（traffic segment）相关表/列见本文件末尾「投放内容绑定」一节；
+-- 旧库升级由 src/config/migrations.py 做幂等兼容迁移。
 
 CREATE TABLE IF NOT EXISTS experiments (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -124,3 +126,70 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   seed_key VARCHAR(120) NULL UNIQUE,
   created_at DATETIME NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ===========================================================================
+-- 投放内容绑定（traffic segment）
+-- 每次实际投放内容一个投放段；样本/分流判断/指标/决策全部带 segment_id。
+-- 槽位列（*_slot）利用「唯一索引允许多个 NULL」实现跨 MySQL/PG 的部分唯一约束：
+--   active_slot 仅 active 段填 experiment_id → 同实验至多一个 active 段；
+--   dedup_slot  仅 building/active 段填 experiment_id → 同内容重试不重复建段，
+--               failed/superseded 置 NULL，允许失败后就同内容重新登记；
+--   valid_slot  仅有效决策填 experiment_id → 同实验至多一条有效决策。
+-- 旧库升级由 src/config/migrations.py 做幂等兼容迁移。
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS traffic_segments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  experiment_id INT NOT NULL,
+  segment_code VARCHAR(60) NOT NULL UNIQUE,
+  seq INT NOT NULL DEFAULT 1,
+  content_ref VARCHAR(200) NOT NULL DEFAULT '',
+  content_hash VARCHAR(64) NOT NULL,
+  content_summary TEXT NULL,
+  content_payload JSON NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'building',
+  is_active TINYINT(1) NOT NULL DEFAULT 0,
+  active_slot INT NULL UNIQUE,
+  dedup_slot INT NULL,
+  samples_ready TINYINT(1) NOT NULL DEFAULT 0,
+  srm_ready TINYINT(1) NOT NULL DEFAULT 0,
+  metrics_ready TINYINT(1) NOT NULL DEFAULT 0,
+  complete TINYINT(1) NOT NULL DEFAULT 0,
+  ready_reason VARCHAR(300) NOT NULL DEFAULT '',
+  activated_at DATETIME NULL,
+  superseded_at DATETIME NULL,
+  created_by VARCHAR(160) NOT NULL DEFAULT 'system',
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  KEY ix_segments_experiment (experiment_id),
+  KEY ix_segments_content_hash (content_hash),
+  KEY ix_segments_status (status),
+  UNIQUE KEY uq_segment_live_content (dedup_slot, content_hash),
+  CONSTRAINT fk_segment_experiment FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS srm_results (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  segment_id INT NOT NULL,
+  experiment_id INT NOT NULL,
+  chi2 FLOAT NULL,
+  df INT NULL,
+  p_value FLOAT NULL,
+  status VARCHAR(12) NOT NULL DEFAULT 'unknown',
+  alarm TINYINT(1) NOT NULL DEFAULT 0,
+  required_per_variant INT NULL,
+  power_at_current FLOAT NULL,
+  mde_at_current FLOAT NULL,
+  total_samples INT NOT NULL DEFAULT 0,
+  payload JSON NULL,
+  checked_by VARCHAR(160) NOT NULL DEFAULT 'system',
+  checked_at DATETIME NOT NULL,
+  UNIQUE KEY uq_srm_segment (segment_id),
+  CONSTRAINT fk_srm_segment FOREIGN KEY (segment_id) REFERENCES traffic_segments(id) ON DELETE CASCADE,
+  CONSTRAINT fk_srm_experiment FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 存量表随段新增的列与替换后的自然键：
+--   assignments.segment_id  → uq_assignment_cell (segment_id, variant_id, channel, metric_key, stat_date)
+--   metric_results.segment_id → uq_metric_experiment_variant_metric (segment_id, variant_code, metric_key)
+--   decisions.segment_id / is_valid / valid_slot / invalid_reason → uq_decision_active (valid_slot)
+--   experiments.active_segment_id

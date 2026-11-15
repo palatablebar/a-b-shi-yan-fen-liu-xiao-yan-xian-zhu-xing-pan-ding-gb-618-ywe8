@@ -85,7 +85,22 @@ export const overviewPage = {
             rowId: (row) => `exp-${row.code}`,
             columns: [
               { key: 'code', label: '编号', className: 'mono nowrap' },
-              { key: 'name', label: '实验', render: (row) => `<b>${esc(row.name)}</b><div class="mono muted">${esc(row.primary_metric_label)} · ${row.variants.length} 变体</div>` },
+              {
+                key: 'name',
+                label: '实验',
+                render: (row) =>
+                  `<b>${esc(row.name)}</b>${
+                    row.active_segment && row.active_segment.stale ? ' <span class="badge srm">结论失效</span>' : ''
+                  }<div class="mono muted">${esc(row.primary_metric_label)} · ${row.variants.length} 变体</div>`,
+              },
+              {
+                key: 'active_segment',
+                label: '生效投放内容',
+                render: (row) =>
+                  row.active_segment
+                    ? `<b class="mono">${esc(row.active_segment.segment_code)}</b><div class="tiny muted">${esc(row.active_segment.content_ref || '')}</div>`
+                    : '<span class="muted">—</span>',
+              },
               {
                 key: 'status',
                 label: '状态',

@@ -75,6 +75,7 @@ def list_assignments(
     variant_code: str | None = None,
     channel: str | None = None,
     metric_key: str | None = None,
+    segment_id: int | None = None,
     limit: int = Query(60),
     offset: int = Query(0),
     db: Session = Depends(get_db),
@@ -84,6 +85,7 @@ def list_assignments(
     return assignment_controller.list_assignments(
         db,
         experiment_id,
+        segment_id=segment_id,
         variant_code=variant_code,
         channel=channel,
         metric_key=metric_key,
@@ -96,10 +98,11 @@ def list_assignments(
 def sample_matrix(
     experiment_id: int,
     metric_key: str | None = None,
+    segment_id: int | None = None,
     db: Session = Depends(get_db),
     principal: dict = Depends(require_roles(*READ_ROLES)),
 ) -> dict:
-    return assignment_controller.matrix(db, experiment_id, metric_key)
+    return assignment_controller.matrix(db, experiment_id, metric_key, segment_id)
 
 
 @router.post("/{experiment_id}/assignments", status_code=201)
